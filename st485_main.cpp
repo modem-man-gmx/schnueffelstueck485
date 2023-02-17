@@ -25,6 +25,7 @@
 using namespace std;
 
 bool run();
+void dump( unsigned char const *data, size_t& len, bool ShowTime, bool ShowAddr, bool ShowFract=false );
 void sleep_ms( int milliseconds );
 static const char* get_timestamp( char* buf );
 int BaudCodeFromBaudRate(unsigned int Baud);
@@ -43,7 +44,7 @@ static unsigned int Data = 8;
 static unsigned char Parity = 'N';
 static unsigned int Stop = 1;
 static unsigned wait_slice = 100;
-static long max_wait = 10*1000L;
+static long max_wait = 30*1000L;
 
 
 
@@ -217,7 +218,7 @@ bool run()
   // Check for errors
   if( 0 > serial_port )
   {
-    cout << get_timestamp(stamp) << "open( \"" << device << "\" ) failed, Error:" << errno << " from open: " << strerror(errno) << endl;
+    cout << get_timestamp(stamp) << "open( \"" << device << "\" ) failed, Error:" << errno << " means: " << strerror(errno) << endl;
     switch(errno)
     {
       case ENOENT:
@@ -245,7 +246,7 @@ bool run()
   // is undefined
   if( 0 != tcgetattr( serial_port, &tty ) )
   {
-    cout << get_timestamp(stamp) << "tcgetattr() failed, Error:" << errno << " from open: " << strerror(errno) << endl;
+    cout << get_timestamp(stamp) << "tcgetattr() failed, Error:" << errno << " means: " << strerror(errno) << endl;
     return false;
   }
 
@@ -354,52 +355,129 @@ bool run()
 
   if( 0 != tcsetattr( serial_port, TCSANOW, &tty ) )
   {
-    cout << get_timestamp(stamp) << "tcsetattr() failed, Error:" << errno << " from open: " << strerror(errno) << endl;
+    cout << get_timestamp(stamp) << "tcsetattr() failed, Error:" << errno << " means: " << strerror(errno) << endl;
     return false;
   }
 
-  unsigned char msg[] = "HELLO\n";
+  unsigned char msg[] = "HELLO\r\n";
   int wr = write( serial_port, msg, sizeof(msg) );
+  if( static_cast<int>(sizeof(msg)) > wr )
+  {
+    cout << get_timestamp(stamp) << "write() failed, Error:" << errno << " means: " << strerror(errno) << endl;
+    return false;
+  }
 
-  long silence=0;
+  long silence=0, tout=0;
   struct timeb start, stop;
-  bool dot=false;
+  //bool dot=false;
 
-  cout << get_timestamp(stamp) << "waiting up to " << (max_wait/1000) << "," << (max_wait%1000) << " sec for data ..." << endl;
+  if(max_wait)
+    cout << get_timestamp(stamp) << "waiting up to " << (max_wait/1000) << "," << (max_wait%1000) << " sec for data ..." << endl;
+  else
+    cout << get_timestamp(stamp) << "waiting infinitely for data, press ^C or ^BREAK to stop ..." << endl;
+
+  unsigned char readbuff[512];
+  size_t offs=0;
+  static const char Steps[]="|/-\\";
+  unsigned Step=0, OldStep=0;
   do
   {
-    char readbuff[128];
-
     ftime(&start); // start.millitm
-    int rd = read( serial_port, readbuff, sizeof(readbuff) );  // read or return after tty.c_cc[VTIME] * 100 ms
+    int rd = read( serial_port, readbuff+offs, sizeof(readbuff)-offs );  // read or return after tty.c_cc[VTIME] * 100 ms
     if(rd==0)
     {
-      if(0==silence%1000) {dot=true; cout << "." << std::flush;}
+      ftime(&stop); // stop.millitm
+      tout = (1000*(stop.time - start.time)) + (stop.millitm - start.millitm);
+      silence += tout;
+      Step = (silence/1000) % 4;
+
+      if(offs)
+      { 
+        cout << get_timestamp(stamp) << "Got packet end or follow-byte-timeout: " << tout << " ms:" << endl;
+        dump( readbuff, offs, true/*time*/, true /*addr*/, true /*remainder*/ );
+      }
+      else if(OldStep!=Step)
+      { 
+        cout << Steps[Step] << "\r" << std::flush;
+        OldStep = Step;
+        //dot=true;
+      }
       unsigned reminder = wait_slice % uart_slice;
       sleep_ms( reminder );
-      silence += wait_slice;
+      silence += reminder;
       continue;
     }
     else if(rd<0)
     {
-      if(dot) cout << endl;
-      cout << get_timestamp(stamp) << "read() failed, Error:" << errno << " from open: " << strerror(errno) << endl;
+      //if(dot) cout << endl;
+      cout << get_timestamp(stamp) << "read() failed, Error:" << errno << " means: " << strerror(errno) << endl;
       break;
     }
     ftime(&stop); // stop.millitm
-    silence = stop.millitm - start.millitm;
-    if(dot) {dot=false;cout << endl;}
-    cout << get_timestamp(stamp) << "got " << rd << " Bytes." << endl;
-  } while( silence < max_wait );
+    tout = stop.millitm - start.millitm;
+    silence = 0;
+    offs += rd;
 
-  if(dot) cout << endl;
+    //if(dot) {dot=false;cout << endl;}
+    //cout << get_timestamp(stamp) << "got " << rd << " Bytes." << endl;
+    if(offs >= sizeof(readbuff) )
+    {
+      cout << get_timestamp(stamp) << "Buffer filled, perhaps not a packet end. " << offs << " bytes:" << endl;
+      dump( readbuff, offs, true/*time*/, true /*addr*/, false /*remainder*/  );
+    }
+
+  } while( silence < max_wait || 0==max_wait );
+
+  //if(dot) cout << endl;
   cout << get_timestamp(stamp) << "close( \"" << device << "\" )." << endl;
   close( serial_port );
   return true;
 }
 
 
+void dump( unsigned char const *data, size_t& len, bool ShowTime, bool ShowAddr, bool ShowFract )
+{
+  static const char Hex[]="0123456789ABCDEF";
+  char stamp[100];
+  std::stringstream Line, Ascii;
+  size_t LOffs=0, datalen=len;
 
+  for( size_t line=0; ((LOffs=line<<4) < datalen) || (ShowFract && len); line++ )
+  {
+    Line.str(std::string());
+    Ascii.str(std::string());
+
+    if(ShowTime) Line << get_timestamp(stamp);
+  //if(ShowAddr) Line << std::hex << reinterpret_cast<std::uintptr_t>(data+LOffs);
+    if(ShowAddr) Line << std::hex << std::setfill('0') << std::setw(4) << LOffs;
+    Line << ": ";
+    for( size_t column=0; column<16; column++ )
+    {
+      unsigned char Byte;
+      if( len>0 ) // have data
+      {
+        Byte = *(data + LOffs + column);
+        len--;
+        Line << (Hex[(Byte & 0xF0 >> 4)]) << (Hex[(Byte & 0x0F)]);
+        if(column==3) Line << ".";
+        else if(column==7) Line << " | ";
+        else if(column==11) Line << ".";
+        else Line << " ";
+        Ascii << static_cast<char>((Byte>0x19 && Byte<0x80 ) ? Byte : 0x2E);
+      }
+      else  // have dummy
+      {
+        Line << "..";
+        if(column==3) Line << " ";
+        else if(column==7) Line << " | ";
+        else if(column==11) Line << " ";
+        else Line << " ";
+        Ascii << ".";
+      }
+    } // for column
+    cout << Line.str() << " |" << Ascii.str() << "|" << endl;
+  }
+}
 
 
 void sleep_ms(int milliseconds)
