@@ -1,39 +1,49 @@
 #include <string>
-#include <cstring>
-#include <iostream>
+#include <iomanip>
+// C library headers
 #include <fstream>
 #include <cstdlib>
-#include <iomanip>
+//#include <cstdio>
+#include <cstring>
+#include <iostream>
 #include <ctime>
 #include <sys/timeb.h>
 #include <limits>
-#include <cmath>
-//#include <unistd.h>
-//#include <errno.h>
+//#include <cmath>
+#include <errno.h>
+#include <unistd.h> // write(), read(), close()
+// Linux headers
+#include <fcntl.h> // Contains file controls like O_RDWR
+#include <errno.h> // Error integer and strerror() function
+#include <termios.h> // Contains POSIX terminal control definitions
+//#include <termbits.h> // termios2, since 2018 on *buntu & co? but not on MSYS2/MinGW ...
 #include <getopt.h>
+
 
 #include "st485.h"
 
 using namespace std;
 
-void run();
+bool run();
 void sleep_ms( int milliseconds );
 static const char* get_timestamp( char* buf );
 
+// some defaults
 static int verbose_flag = 0;
 //static int modbus_aggressive_flag = 0;
 //static int modbus_debug_flag = 0;
 //static int modbus_status_flag = -1;
+static string device("/dev/ttyUSB1");
+static unsigned int Baud = 9600;
+static unsigned int Data = 8;
+static unsigned char Parity = 'N';
+static unsigned int Stop = 1;
 
 std::ofstream data_file;
 
 int main( const int argc, char* const* argv )
 {
   //int res = -1;
-  // some defaults
-  string device("/dev/ttyUSB1");
-  unsigned int Baud = 9600;
-  unsigned char Parity = 'N';
 
   cout << "+++ We scan RS485/USB for modbus or the like +++" << endl;
 
@@ -178,6 +188,7 @@ int main( const int argc, char* const* argv )
 //       << " (0x" << std::setfill('0') << std::setw(2) << hex << static_cast<int>(SlaveAddress) << ")"
 //       << endl;
 //std::cout.copyfmt(oldState);
+  cout << endl;
 
   run();
 
@@ -186,13 +197,55 @@ int main( const int argc, char* const* argv )
 }
 
 
-void run()
+bool run()
 {
   char stamp[100];
+  
+  cout << get_timestamp(stamp) << "open( \"" << device << "\", O_RDONLY ) ..." << endl;
+  int serial_port = open( device.c_str(), O_RDONLY );
 
+  // Check for errors
+  if( 0 > serial_port )
+  {
+    cout << get_timestamp(stamp) << "open( \"" << device << "\" ) failed, Error:" << errno << " from open: " << strerror(errno) << endl;
+    switch(errno)
+    {
+      case ENOENT:
+        cout << get_timestamp(stamp) << "probably wrong device name." << endl;
+#       ifdef __CYGWIN__
+        cout << get_timestamp(stamp) << "try one of \"ls /dev/tty*\"" << endl;
+#       endif
+        break;
+      case EPERM : // fallthrough
+      case EACCES:
+        cout << get_timestamp(stamp) << "probably missed to set \"sudo adduser $USER dialout\"" << endl;
+        break;
+    }
+    return false;
+  }
+  
+  // Create new termios struct, we call it 'tty' for convention
+  // No need for "= {0}" at the end as we'll immediately write the existing
+  // config to this struct
+  struct termios tty;
+
+  // Read in existing settings, and handle any error
+  // NOTE: This is important! POSIX states that the struct passed to tcsetattr()
+  // must have been initialized with a call to tcgetattr() overwise behaviour
+  // is undefined
+  if( 0 != tcgetattr( serial_port, &tty ) )
+  {
+    cout << get_timestamp(stamp) << "tcgetattr() failed, Error:" << errno << " from open: " << strerror(errno) << endl;
+    return false;
+  }
+  
   sleep_ms(3000);
   cout << get_timestamp(stamp) << "Dummy=" << 1 << endl;
   sleep_ms(3000);
+  
+  cout << get_timestamp(stamp) << "close( \"" << device << "\" )." << endl;
+  close( serial_port );
+  return true;
 }
 
 

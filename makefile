@@ -1,6 +1,8 @@
 .phony: clean all run
 
 PROGNAME:=Schnueffelstueck485
+DEVICE485?=/dev/ttyUSB1
+
 CXX = g++
 CXXFLAGS = -ggdb -Wall
 
@@ -23,4 +25,4 @@ clean:
 	rm $(PROGNAME) $(OBJECTS)
 
 run:
-	./$(PROGNAME) --device /dev/ttyUSB1 # --verbose --debug
+	./$(PROGNAME) --device $(DEVICE485) # --verbose --debug
